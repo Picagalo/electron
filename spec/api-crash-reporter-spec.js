@@ -1,5 +1,6 @@
 const assert = require('assert')
 const childProcess = require('child_process')
+const fs = require('fs')
 const http = require('http')
 const multiparty = require('multiparty')
 const path = require('path')
@@ -73,6 +74,59 @@ describe('crashReporter module', function () {
         })
       })
 
+      it('should not send minidump if uploadToServer is false', function (done) {
+        this.timeout(120000)
+
+        if (process.platform === 'darwin') {
+          crashReporter.setUploadToServer(false)
+        }
+
+        let dumpFile;
+        const crashesDir = crashReporter.getCrashesDirectory()
+        const testDone = (uploaded) => {
+          server.close()
+          if (uploaded) {
+            throw new Error('minidump uploaded when uploadToServer was false')
+          }
+          fs.unlinkSync(path.join(crashesDir, dumpFile));
+          if (process.platform === 'darwin') {
+            crashReporter.setUploadToServer(true)
+          }
+          done()
+        }
+
+        let server = startServer({
+          callback (port) {
+            const crashUrl = url.format({
+              protocol: 'file',
+              pathname: path.join(fixtures, 'api', 'crash.html'),
+              search: `?port=${port}&skipUpload=1`
+            })
+            w.loadURL(crashUrl)
+          },
+          processType: 'renderer',
+          done: testDone.bind(null, true)
+        })
+
+        // when not uploaded, the minidump file stays in the crash directory
+        const interval = setInterval(() => {
+          fs.readdir(crashesDir, (err, files) => {
+            if (err) {
+              return
+            }
+            let dumps = files.filter((f) => /\.dmp$/.test(f))
+            if (!dumps.length) {
+              return
+            }
+            assert.equal(1, dumps.length)
+            dumpFile = dumps[0]
+            clearInterval(interval)
+            // wait 300ms more to ensure the file is not deleted
+            setTimeout(testDone, 300)
+          })
+        }, 100)
+      })
+
       it('should send minidump with updated extra parameters', function (done) {
         if (process.env.APPVEYOR === 'True') return done()
         if (process.env.TRAVIS === 'true') return done()
@@ -115,6 +169,15 @@ describe('crashReporter module', function () {
           submitURL: 'Missing companyName'
         })
       }, /companyName is a required option to crashReporter\.start/)
+    })
+
+    it('does not require submitURL if uploadToServer is set to false', function () {
+      assert.doesNotThrow(function () {
+        crashReporter.start({
+          companyName: 'Umbrella Corporation',
+          uploadToServer: false
+        })
+      })
     })
 
     it('can be called multiple times', function () {
@@ -215,4 +278,5 @@ const startServer = ({callback, processType, done}) => {
     }
     callback(port)
   })
+  return server
 }
